@@ -89,7 +89,11 @@ jobs:
             mkdir -p ~/tez-yetkaz
             cd ~/tez-yetkaz
             
-            # 2. Portlarni bo'shatish
+            # 2. Portlarni bo'shatish va Firewall tekshirish
+            echo "--- Firewall holati ---"
+            sudo ufw status || echo "ufw not installed"
+            sudo iptables -L -n | grep :80 || echo "No iptables rule for port 80"
+            
             sudo fuser -k 80/tcp || true
             sudo fuser -k 5000/tcp || true
 
@@ -126,8 +130,15 @@ jobs:
             # 4. Docker Hub-ga login qilish va imijlarni tortish
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             
-            # Docker Compose V2 (probel bilan) ishlatamiz
-            docker compose pull
+            # Tarmoqni tekshirish
+            echo "--- Tarmoq ulanishini tekshirish ---"
+            ping -c 1 8.8.8.8 || echo "❌ Internetga ulanish yo'q (Ping failed)"
+            curl -I https://registry-1.docker.io/v2/ || echo "❌ Docker Registry-ga ulanib bo'lmadi"
+
+            # Docker Compose imijlarni tortish (Retry bilan)
+            echo "--- Imijlarni tortish (Attempt 1) ---"
+            docker compose pull || (echo "Retry pulling in 15s..." && sleep 15 && docker compose pull)
+            
             docker compose up -d --remove-orphans
             
             echo "--- Konteynerlar holati ---"
