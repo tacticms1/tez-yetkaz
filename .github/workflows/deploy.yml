@@ -127,16 +127,72 @@ jobs:
                     condition: service_healthy
             EOF
             
-            # 4. Docker Hub-ga login qilish va imijlarni tortish
-            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-            # Tarmoqni tekshirish
+            # 4. Docker Hub bilan bog'liq tarmoqni tekshirish
             echo "--- Tarmoq ulanishini tekshirish ---"
             ping -c 1 8.8.8.8 || echo "❌ Internetga ulanish yo'q (Ping failed)"
             getent hosts registry-1.docker.io || echo "❌ DNS registry-1.docker.io ni yecha olmadi"
             cat /etc/resolv.conf || true
+            python3 - << 'PY'
+            import socket, ssl
+
+            host = "registry-1.docker.io"
+            port = 443
+
+            print("--- Python DNS/TCP/TLS diagnostika ---")
+            try:
+                infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                addrs = sorted({info[4][0] for info in infos})
+                print("DNS OK:", ", ".join(addrs))
+            except Exception as e:
+                print("DNS ERROR:", repr(e))
+                raise SystemExit(0)
+
+            for addr in addrs[:3]:
+                print(f"Testing TCP -> {addr}:{port}")
+                try:
+                    raw = socket.create_connection((addr, port), timeout=10)
+                    print("TCP OK")
+                except Exception as e:
+                    print("TCP ERROR:", repr(e))
+                    continue
+
+                try:
+                    ctx = ssl.create_default_context()
+                    with ctx.wrap_socket(raw, server_hostname=host) as s:
+                        print("TLS OK:", s.version())
+                except Exception as e:
+                    print("TLS ERROR:", repr(e))
+            PY
             curl -I --max-time 20 https://registry-1.docker.io/v2/ || echo "❌ Docker Registry-ga ulanib bo'lmadi"
             docker info || true
+            docker version || true
+            journalctl -u docker --no-pager -n 50 || true
+
+            docker_login_with_retry() {
+              local attempt=1
+
+              while [ "$attempt" -le 3 ]; do
+                echo "--- Docker login (attempt ${attempt}/3) ---"
+                if echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin; then
+                  return 0
+                fi
+
+                echo "⚠️ Docker login muvaffaqiyatsiz tugadi"
+                journalctl -u docker --no-pager -n 30 || true
+                if [ "$attempt" -lt 3 ]; then
+                  echo "--- Docker servis restart qilinmoqda ---"
+                  sudo systemctl restart docker || true
+                  sleep 10
+                fi
+
+                attempt=$((attempt + 1))
+              done
+
+              return 1
+            }
+
+            # 5. Docker Hub-ga login qilish
+            docker_login_with_retry
 
             pull_with_retry() {
               local image="$1"
