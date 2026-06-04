@@ -18,17 +18,20 @@ jobs:
       - name: Kodni yuklab olish
         uses: actions/checkout@v4
 
-      - name: Node.js 18 o'rnatish
+      - name: Node.js 22 o'rnatish
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: backend/package-lock.json
+          node-version: '22'
 
       - name: Backend bog'liqliklarini o'rnatish
         run: |
           cd backend
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm install
+
+      - name: Frontend bog'liqliklarini o'rnatish
+        run: |
+          cd frontend
+          npm install
 
   # ===== JOB 2: BUILD DOCKER =====
   build:
