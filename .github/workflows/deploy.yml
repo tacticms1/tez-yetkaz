@@ -1,0 +1,129 @@
+name: TezYetkaz CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/tez-yetkaz
+
+jobs:
+  # ===== JOB 1: TEST =====
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodni yuklab olish
+        uses: actions/checkout@v4
+
+      - name: Node.js 18 o'rnatish
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Backend bog'liqliklarini o'rnatish
+        run: cd backend && npm install
+
+      - name: Testlarni ishlatish
+        run: cd backend && npm test --if-present
+
+      - name: Frontend bog'liqliklarini o'rnatish
+        run: cd frontend && npm install
+
+  # ===== JOB 2: BUILD DOCKER =====
+  build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker Hub ga kirish
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Backend Docker image yaratish
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}-backend:latest ./backend
+          docker build -t ${{ env.DOCKER_IMAGE }}-backend:${{ github.sha }} ./backend
+
+      - name: Frontend Docker image yaratish
+        run: |
+          docker build -t ${{ env.DOCKER_IMAGE }}-frontend:latest ./frontend
+          docker build -t ${{ env.DOCKER_IMAGE }}-frontend:${{ github.sha }} ./frontend
+
+      - name: Docker Hub ga yuklash
+        run: |
+          docker push ${{ env.DOCKER_IMAGE }}-backend:latest
+          docker push ${{ env.DOCKER_IMAGE }}-backend:${{ github.sha }}
+          docker push ${{ env.DOCKER_IMAGE }}-frontend:latest
+          docker push ${{ env.DOCKER_IMAGE }}-frontend:${{ github.sha }}
+
+  # ===== JOB 3: DEPLOY TO AWS EC2 =====
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS EC2 ga deploy qilish
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            mkdir -p ~/tez-yetkaz
+            cd ~/tez-yetkaz
+            # Docker Compose faylini yaratish yoki yangilash
+            cat > docker-compose.yml << 'EOF'
+            version: '3.8'
+            networks:
+              tez-yetkaz-network:
+                driver: bridge
+            services:
+              backend:
+                image: ibrohim1454/tez-yetkaz-backend:latest
+                container_name: tez-yetkaz-backend
+                environment:
+                  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+                  PORT: 5000
+                  NODE_ENV: production
+                networks:
+                  - tez-yetkaz-network
+                restart: unless-stopped
+              nginx:
+                image: nginx:alpine
+                container_name: tez-yetkaz-nginx
+                ports:
+                  - "80:80"
+                networks:
+                  - tez-yetkaz-network
+                restart: unless-stopped
+              frontend:
+                image: ibrohim1454/tez-yetkaz-frontend:latest
+                container_name: tez-yetkaz-frontend
+                networks:
+                  - tez-yetkaz-network
+                restart: unless-stopped
+            EOF
+            
+            docker-compose pull
+            docker-compose up -d --remove-orphans
+            docker image prune -f
+            echo "✅ TezYetkaz muvaffaqiyatli deploy qilindi!"
+
+      - name: Health check
+        run: |
+          sleep 15
+          curl -f http://${{ secrets.EC2_HOST }}/health || exit 1
+          echo "✅ Health check muvaffaqiyatli!"
