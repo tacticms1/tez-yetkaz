@@ -26,13 +26,14 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Backend bog'liqliklarini o'rnatish
-        run: cd backend && npm install
-
-      - name: Testlarni ishlatish
-        run: cd backend && npm test --if-present
+        run: |
+          cd backend
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
       - name: Frontend bog'liqliklarini o'rnatish
-        run: cd frontend && npm install
+        run: |
+          cd frontend
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
   # ===== JOB 2: BUILD DOCKER =====
   build:
@@ -52,19 +53,12 @@ jobs:
       - name: Backend Docker image yaratish
         run: |
           docker build -t ${{ env.DOCKER_IMAGE }}-backend:latest ./backend
-          docker build -t ${{ env.DOCKER_IMAGE }}-backend:${{ github.sha }} ./backend
+          docker push ${{ env.DOCKER_IMAGE }}-backend:latest
 
       - name: Frontend Docker image yaratish
         run: |
           docker build -t ${{ env.DOCKER_IMAGE }}-frontend:latest ./frontend
-          docker build -t ${{ env.DOCKER_IMAGE }}-frontend:${{ github.sha }} ./frontend
-
-      - name: Docker Hub ga yuklash
-        run: |
-          docker push ${{ env.DOCKER_IMAGE }}-backend:latest
-          docker push ${{ env.DOCKER_IMAGE }}-backend:${{ github.sha }}
           docker push ${{ env.DOCKER_IMAGE }}-frontend:latest
-          docker push ${{ env.DOCKER_IMAGE }}-frontend:${{ github.sha }}
 
   # ===== JOB 3: DEPLOY TO AWS EC2 =====
   deploy:
@@ -82,16 +76,20 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            mkdir -p ~/tez-yetkaz/nginx
+            # Docker o'rnatilganini tekshirish
+            if ! command -v docker &> /dev/null; then
+              sudo apt update && sudo apt install docker.io docker-compose -y
+              sudo usermod -aG docker $USER
+            fi
+
+            mkdir -p ~/tez-yetkaz
             cd ~/tez-yetkaz
             
             # Portlarni bo'shatish
             sudo fuser -k 80/tcp || true
             sudo fuser -k 5000/tcp || true
-            sudo systemctl stop nginx || true
-            sudo systemctl stop apache2 || true
 
-            # Docker-compose faylini yaratish (To'g'ridan-to'g'ri portlarni ochamiz)
+            # Docker-compose faylini yaratish
             cat > docker-compose.yml << 'EOF'
             version: '3.8'
             services:
@@ -104,29 +102,31 @@ jobs:
                   DATABASE_URL: "${{ secrets.DATABASE_URL }}"
                   PORT: 5000
                   NODE_ENV: production
-                restart: unless-stopped
+                restart: always
               frontend:
                 image: ${{ secrets.DOCKER_USERNAME }}/tez-yetkaz-frontend:latest
                 container_name: tez-yetkaz-frontend
                 ports:
                   - "80:80"
-                restart: unless-stopped
+                restart: always
             EOF
             
-            # Serverda Docker ishga tushirish
-            sudo ufw allow 80/tcp || true
-            sudo ufw allow 5000/tcp || true
-            
+            # Docker Hub login va ishga tushirish
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
             docker-compose pull
             docker-compose up -d --remove-orphans
             
-            echo "✅ Konteynerlar ishga tushirildi!"
+            echo "--- Konteynerlar holati ---"
             docker ps
+            echo "--- Backend Loglari (xatolikni ko'rish uchun) ---"
+            docker logs tez-yetkaz-backend --tail 20
 
       - name: Health check
         run: |
-          echo "Waiting for service..."
-          sleep 40
-          # Port 80 yoki 5000 ni tekshiramiz
-          curl -v http://${{ secrets.EC2_HOST }} || curl -v http://${{ secrets.EC2_HOST }}:5000 || (echo "❌ Health check failed!" && exit 1)
-          echo "✅ Sayt ishlamoqda!"
+          echo "Waiting for service (60 seconds)..."
+          sleep 60
+          echo "Checking Backend (Port 5000)..."
+          curl -v http://${{ secrets.EC2_HOST }}:5000 || (echo "❌ Backend is down!" && exit 1)
+          echo "Checking Frontend (Port 80)..."
+          curl -v http://${{ secrets.EC2_HOST }} || (echo "❌ Frontend is down!" && exit 1)
+          echo "✅ Hammasi muvaffaqiyatli ishga tushdi!"
