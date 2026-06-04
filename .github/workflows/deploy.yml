@@ -129,17 +129,42 @@ jobs:
             
             # 4. Docker Hub-ga login qilish va imijlarni tortish
             echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-            
+
             # Tarmoqni tekshirish
             echo "--- Tarmoq ulanishini tekshirish ---"
             ping -c 1 8.8.8.8 || echo "❌ Internetga ulanish yo'q (Ping failed)"
-            curl -I https://registry-1.docker.io/v2/ || echo "❌ Docker Registry-ga ulanib bo'lmadi"
+            getent hosts registry-1.docker.io || echo "❌ DNS registry-1.docker.io ni yecha olmadi"
+            cat /etc/resolv.conf || true
+            curl -I --max-time 20 https://registry-1.docker.io/v2/ || echo "❌ Docker Registry-ga ulanib bo'lmadi"
+            docker info || true
 
-            # Docker Compose imijlarni tortish (Retry bilan)
-            echo "--- Imijlarni tortish (Attempt 1) ---"
-            docker compose pull || (echo "Retry pulling in 15s..." && sleep 15 && docker compose pull)
-            
-            docker compose up -d --remove-orphans
+            pull_with_retry() {
+              local image="$1"
+              local attempt=1
+
+              while [ "$attempt" -le 3 ]; do
+                echo "--- Pulling ${image} (attempt ${attempt}/3) ---"
+                if docker pull "$image"; then
+                  return 0
+                fi
+
+                echo "⚠️ Pull muvaffaqiyatsiz tugadi: ${image}"
+                if [ "$attempt" -lt 3 ]; then
+                  echo "--- Docker servis restart qilinmoqda ---"
+                  sudo systemctl restart docker || true
+                  sleep 10
+                fi
+
+                attempt=$((attempt + 1))
+              done
+
+              return 1
+            }
+
+            pull_with_retry "${{ secrets.DOCKER_USERNAME }}/tez-yetkaz-backend:latest"
+            pull_with_retry "${{ secrets.DOCKER_USERNAME }}/tez-yetkaz-frontend:latest"
+
+            docker compose up -d --pull never --remove-orphans
             
             echo "--- Konteynerlar holati ---"
             docker ps -a
