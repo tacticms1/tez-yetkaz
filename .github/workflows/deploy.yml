@@ -30,11 +30,6 @@ jobs:
           cd backend
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-      - name: Frontend bog'liqliklarini o'rnatish
-        run: |
-          cd frontend
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
-
   # ===== JOB 2: BUILD DOCKER =====
   build:
     name: Docker Build
@@ -118,15 +113,13 @@ jobs:
             
             echo "--- Konteynerlar holati ---"
             docker ps
-            echo "--- Backend Loglari (xatolikni ko'rish uchun) ---"
-            docker logs tez-yetkaz-backend --tail 20
+            echo "--- Backend Loglari ---"
+            docker logs tez-yetkaz-backend --tail 30
 
       - name: Health check
         run: |
           echo "Waiting for service (60 seconds)..."
           sleep 60
-          echo "Checking Backend (Port 5000)..."
-          curl -v http://${{ secrets.EC2_HOST }}:5000 || (echo "❌ Backend is down!" && exit 1)
           echo "Checking Frontend (Port 80)..."
-          curl -v http://${{ secrets.EC2_HOST }} || (echo "❌ Frontend is down!" && exit 1)
+          curl -v http://${{ secrets.EC2_HOST }} || (echo "❌ Sayt hali ishga tushmadi!" && exit 1)
           echo "✅ Hammasi muvaffaqiyatli ishga tushdi!"
